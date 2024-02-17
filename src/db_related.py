@@ -128,7 +128,7 @@ async def check_and_update_record(playerstats, guild_id, playername):
         most_recent_timestamp_str = most_recent_record[3]
         most_recent_timestamp = datetime.strptime(most_recent_timestamp_str, '%Y-%m-%d %H:%M:%S')
 
-        if current_time - most_recent_timestamp < timedelta(minutes=0):
+        if current_time - most_recent_timestamp < timedelta(minutes=1):
             # merge and update the most recent record if its less than 1 minute old
             current_record_dict = {column_names[i]: most_recent_record[i + 5] for i in range(len(column_names))}
             merged_data = merge_record(current_record_dict, playerstats)
