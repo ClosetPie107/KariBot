@@ -95,26 +95,27 @@ async def check_and_update_record(playerstats, guild_id, playername):
     :param playerstats: Dictionary containing player statistics.
     :param guild_id: The guild ID associated with the player's record.
     :param playername: The name of the player.
-    :return: A tuple containing a response message and the changed record.
+    :return: A tuple containing a response message, the changed record and if applicable the differences.
     """
     day_str = datetime.utcnow().strftime('%Y-%m-%d')
     current_time = datetime.utcnow()
     response = "recordinserted"
     changed_row_id = None
+    differences = None
     global column_names
-    print(column_names)
 
     db = await StatDBConnection.get_instance()
     conn = await db.get_connection()
     cur = await conn.cursor()
 
-    # check if there are already two records for this month
+    # check if there are already two records for this day
     await cur.execute("""
                 SELECT *
                 FROM playerstats
-                WHERE guildid = ? AND playername = ? AND strftime('%Y-%m-%d', timestamp) = ?
+                WHERE guildid = ? AND playername = ?
                 ORDER BY timestamp DESC
-            """, (guild_id, playername, day_str))
+                LIMIT 2
+            """, (guild_id, playername))
 
     records = await cur.fetchall()
 
@@ -127,7 +128,7 @@ async def check_and_update_record(playerstats, guild_id, playername):
         most_recent_timestamp_str = most_recent_record[3]
         most_recent_timestamp = datetime.strptime(most_recent_timestamp_str, '%Y-%m-%d %H:%M:%S')
 
-        if current_time - most_recent_timestamp < timedelta(minutes=1):
+        if current_time - most_recent_timestamp < timedelta(minutes=0):
             # merge and update the most recent record if its less than 1 minute old
             current_record_dict = {column_names[i]: most_recent_record[i + 5] for i in range(len(column_names))}
             merged_data = merge_record(current_record_dict, playerstats)
@@ -135,20 +136,46 @@ async def check_and_update_record(playerstats, guild_id, playername):
             # update the record in the database
             changed_row_id = await update_merged_record(cur, merged_data, most_recent_record_id)
             response = "recordmerged"
-        elif len(records) >= 2:
+        elif len(records) >= 2 and datetime.strptime(records[1][3], '%Y-%m-%d %H:%M:%S').strftime(
+                '%Y-%m-%d') == day_str:
             # if there are two or more records this day, update the most recent
             changed_row_id = await update_record(cur, playerstats, most_recent_record_id)
             response = "recordupdated"
         else:
-            # insert a new record if there is only one record and it's older than 1 minute
+            # insert a new record if there is only one record today and it's older than 1 minute
             changed_row_id = await insert_new_record(cur, playerstats)
+
+        # if we updated or inserted a new record, we show the differences compared to the last record
+        if response != "recordmerged":
+            differences = calc_latest_difference(playerstats, most_recent_record)
 
     await conn.commit()
     await cur.execute("SELECT * FROM playerstats WHERE id = ?", (changed_row_id,))
     changed_record = await cur.fetchone()
     changed_record = changed_record[5:]  # extract the correct column values
 
-    return response, changed_record
+    return response, changed_record, differences
+
+
+def calc_latest_difference(playerstats, latest_record):
+    """
+    Calculates differences between inserted record and the previous record.
+
+    :param playerstats: Dictionary containing the inserted record player stats.
+    :param latest_record: Latest record from the database
+    :return: Dictionary containing differences between inserted record and the previous
+    """
+    differences = dict()
+    for column, value in zip(column_names, latest_record[5:]):
+        try:
+            safe_value = int(value) if value is not None else 0
+        except ValueError:
+            continue
+
+        playerstat_value = playerstats.get(column, 0)
+        if isinstance(playerstat_value, int):
+            differences[column] = playerstat_value - safe_value
+    return differences
 
 
 async def fetch_column_names(cur, data_columns=False):
@@ -287,12 +314,13 @@ async def insert_new_record(cur, playerstats):
     return cur.lastrowid
 
 
-async def calculate_changes(guild_id, category, year, month=None, day=None, week=None, kingdom=None):
+async def calculate_changes(guild_id, category, scope, year, month=None, day=None, week=None, kingdom=None):
     """
     Calculates changes in player statistics over a specified time frame.
 
     :param guild_id: The guild ID for which to calculate changes.
     :param category: The category of statistics to calculate changes for.
+    :param scope: The scope boolean of the scoreboard, either all servers or this server only where true is all servers
     :param year: The year of the time frame.
     :param month: Optional; the month of the time frame.
     :param day: Optional; the day of the time frame.
@@ -300,27 +328,25 @@ async def calculate_changes(guild_id, category, year, month=None, day=None, week
     :param kingdom: Optional; the kingdom to filter records by.
     :return: A list of dictionaries detailing the changes in player statistics.
     """
-    params = [guild_id]
+    params = [] if scope else [guild_id]
 
     # create the query
     query = f"""
     SELECT p1.playername, p1.guildid, p1.{category} as before, p2.{category} as after
     FROM playerstats p1
-    INNER JOIN playerstats p2 ON p1.playername = p2.playername AND p1.guildid = p2.guildid
-    WHERE p1.guildid = ? AND {construct_time_frame_filter(1, year, month, day, week)}
+    INNER JOIN playerstats p2 ON p1.playername = p2.playername {("" if scope else "AND p1.guildid = p2.guildid")}
+    WHERE {construct_time_frame_filter(1, year, month, day, week)} {("" if scope else "AND p1.guildid = ?")}
   AND p1.id = (
         SELECT MIN(p3.id)
         FROM playerstats p3
-        WHERE p3.playername = p1.playername AND p3.guildid = p1.guildid
-        AND {construct_time_frame_filter(3, year, month, day, week)}""" + (
-        f" AND p3.kingdom = ?" if kingdom else "") + f"""
+        WHERE p3.playername = p1.playername {("" if scope else "AND p3.guildid = p1.guildid")}
+        AND {construct_time_frame_filter(3, year, month, day, week)} {("" if not kingdom else "AND p3.kingdom = ?")}
     )
     AND p2.id = (
         SELECT MAX(p4.id)
         FROM playerstats p4
-        WHERE p4.playername = p2.playername AND p4.guildid = p2.guildid
-        AND {construct_time_frame_filter(4, year, month, day, week)}""" + (
-                f" AND p4.kingdom = ?" if kingdom else "") + f"""
+        WHERE p4.playername = p2.playername {("" if scope else "AND p4.guildid = p2.guildid")}
+        AND {construct_time_frame_filter(4, year, month, day, week)} {("" if not kingdom else "AND p4.kingdom = ?")}
     )
     """
 
@@ -356,35 +382,36 @@ async def calculate_changes(guild_id, category, year, month=None, day=None, week
     return differences
 
 
-async def get_scoreboard(guild_id, stat, ascending, limit, kingdom=None):
+async def get_scoreboard(guild_id, category, scope, ascending, limit, kingdom=None):
     """
     Retrieves a scoreboard of player statistics for a given guild.
 
     :param guild_id: The ID of the guild for which to retrieve the scoreboard.
-    :param stat: The statistic to generate the scoreboard for.
+    :param category: The statistic to generate the scoreboard for.
     :param ascending: Boolean indicating whether to sort the scoreboard in ascending order.
     :param limit: The maximum number of entries to include in the scoreboard.
     :param kingdom: Optional; the kingdom to filter the scoreboard by.
     :return: A list of dictionaries representing the scoreboard, or None if no records were found.
     """
     order = 'ASC' if ascending else 'DESC'
-    where_clause = f"WHERE p.guildid = ? AND p.{stat} IS NOT NULL"
+
+    where_clause = f'WHERE p.{category} IS NOT NULL {("" if scope else "AND p.guildid = ? ")}'
 
     # if kingdom is specified, add it to the WHERE clause
     if kingdom:
-        where_clause += " AND p.kingdom = ?"
+        where_clause += "AND p.kingdom = ?"
 
     query = f"""
-            SELECT p.playername, p.{stat}
+            SELECT p.playername, p.{category}
             FROM playerstats p
             INNER JOIN (
                 SELECT playername, MAX(id) as latest
                 FROM playerstats
-                WHERE guildid = ? -- Ensure this is part of the subquery as well
+                {("" if scope else "WHERE guildid = ?")}
                 GROUP BY playername
             ) as latest_record ON p.playername = latest_record.playername AND p.id = latest_record.latest
             {where_clause}
-            ORDER BY p.{stat} {order}
+            ORDER BY p.{category} {order}
             LIMIT ?
         """
 
@@ -393,7 +420,7 @@ async def get_scoreboard(guild_id, stat, ascending, limit, kingdom=None):
     cur = await conn.cursor()
 
     # lrepare the parameters for the query
-    params = [guild_id, guild_id]
+    params = [] if scope else [guild_id, guild_id]
     if kingdom:
         params.extend([kingdom, limit])
     else:
@@ -429,10 +456,10 @@ async def update_language(discord_id, language):
 
 async def get_language(discord_id):
     """
-        Retrieves the language preference for a given Discord ID.
+    Retrieves the language preference for a given Discord ID.
 
-        :param discord_id: The Discord ID to get the language preference for.
-        :return: The language preference if found, otherwise returns "en" (English) as default.
+    :param discord_id: The Discord ID to get the language preference for.
+    :return: The language preference if found, otherwise returns "en" (English) as default.
     """
     db = await LangDBConnection.get_instance()
     conn = await db.get_connection()
@@ -448,6 +475,32 @@ async def get_language(discord_id):
         return language
     else:
         return "en"
+
+
+async def get_latest_record(guild_id, playername):
+    """
+    Retrieves the latest stats of a player.
+
+    :param guild_id: Guild id of the discord server
+    :param playername: The playername of the player to get the stats for
+    :return: The latest record if found else none
+    """
+    db = await StatDBConnection.get_instance()
+    conn = await db.get_connection()
+    cur = await conn.cursor()
+
+    await cur.execute("""
+                   SELECT *
+                   FROM playerstats
+                   WHERE guildid = ? AND playername = ?
+                   ORDER BY timestamp DESC
+               """, (guild_id, playername))
+
+    record = await cur.fetchone()
+    if record:
+        return record[5:]
+    else:
+        return None
 
 
 # Helper functions

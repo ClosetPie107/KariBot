@@ -10,14 +10,13 @@ import re
 from datetime import datetime
 import concurrent.futures
 import aiohttp
-import pytesseract
 import asyncio
 import io
-# from paddleocr import PaddleOCR, draw_ocr
+import db_related
 from fuzzywuzzy import fuzz
 from PIL import Image, ImageOps, ImageEnhance
 from pytesseract import image_to_string
-from src import db_related
+
 
 executor = concurrent.futures.ThreadPoolExecutor()  # global executor
 

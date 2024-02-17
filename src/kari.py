@@ -11,7 +11,8 @@ import os
 import discord
 import json
 import time
-from src.db_related import *
+from pytesseract import pytesseract
+from db_related import *
 from dotenv import load_dotenv
 from discord.ext.commands import has_permissions
 from discord import guild_only, Option
@@ -79,6 +80,7 @@ async def upload_stats(ctx,
     # attempt to process the images to extract the player stats information
     playerstats = dict()
     st = time.time()
+
     try:
         if secondimage and secondimage.content_type.startswith("image/"):
             playerstats = await process_images_tess(image.url, playername, ctx.guild.id, ctx.author.id, language_file,
@@ -88,15 +90,27 @@ async def upload_stats(ctx,
     except Exception as e:
         await ctx.followup.send(language_file.get("errorimageprocess"))
         print(e)
+
     print(f"{time.time() - st} seconds")
 
     # attempt to insert / update the record in the database
-    response, changed_record = await check_and_update_record(playerstats, ctx.guild.id, playername)
+    response, changed_record, differences = await check_and_update_record(playerstats, ctx.guild.id, playername)
     column_names = get_column_names()
     localized_column_names = [language_file.get(column, column) for column in column_names]
     message = f"{language_file.get(response)}\n```"
-    for attribute, value in zip(localized_column_names, changed_record):
-        message += f"\n{attribute}: {value}"
+    if differences:
+        for localized_attribute, attribute, value in zip(localized_column_names, column_names, changed_record):
+            difference = differences.get(attribute, None)
+            if not difference:
+                formatted_difference = ""
+            elif difference > 0:
+                formatted_difference = f"(+{difference})"
+            else:
+                formatted_difference = f"({difference})"
+            message += f"\n{localized_attribute}: {value}   {formatted_difference}"
+    else:
+        for localized_attribute, value in zip(localized_column_names, changed_record):
+            message += f"\n{localized_attribute}: {value}"
     message += "```"
     await ctx.followup.send(message)
 
@@ -211,6 +225,8 @@ async def alter_record(ctx,
 async def scoreboard(ctx,
                      category: Option(str, "The leaderboard category", choices=categories),
                      kingdom: Option(str, "Name of the kingdom", default=None, max_length=40),
+                     scope: Option(str, "The scope of the leaderboard", choices=["This Server", "All Servers"],
+                                   default="This Server"),
                      n: Option(int, "Number of players on the leaderboard (max 25)", default=10, min_value=1,
                                max_value=25)):
     await ctx.defer()  # avoid timeout
@@ -224,7 +240,7 @@ async def scoreboard(ctx,
     asc = category in asc_categories
 
     # fetch scoreboard
-    scoreboard = await get_scoreboard(ctx.guild.id, category, asc, n)
+    scoreboard = await get_scoreboard(ctx.guild.id, category, scope == "All Servers", asc, n)
     title = f"{language_file.get('scoreboardfor')} {language_file.get(category)}"
     if kingdom:
         title = f"({kingdom}) {title}"
@@ -242,44 +258,53 @@ async def scoreboard(ctx,
 @guild_only()
 async def yearly_scoreboard(ctx, category: Option(str, "The leaderboard category", choices=categories),
                             kingdom: Option(str, "Name of the kingdom", default=None, max_length=40),
+                            scope: Option(str, "The scope of the leaderboard", choices=["This Server", "All Servers"],
+                                          default="This Server"),
                             year: Option(int, "Enter the year", default=None, min_value=1, max_value=999999),
                             n: Option(int, "Number of players on the leaderboard (max 25)", default=10, min_value=1,
                                       max_value=25)):
-    await generate_scoreboard(ctx, "yearly", category, kingdom=kingdom, year=year, n=n)
+    await generate_scoreboard(ctx, "yearly", category, kingdom=kingdom, scope=scope, year=year, n=n)
 
 
 @bot.slash_command(name="month_scoreboard", description="Get the monthly scoreboard for a specific category")
 @guild_only()
 async def monthly_scoreboard(ctx, category: Option(str, "The leaderboard category", choices=categories),
                              kingdom: Option(str, "Name of the kingdom", default=None, max_length=40),
+                             scope: Option(str, "The scope of the leaderboard", choices=["This Server", "All Servers"],
+                                           default="This Server"),
                              year: Option(int, "Enter the year", default=None, min_value=1, max_value=999999),
                              month: Option(int, "Enter the month number", default=None, min_value=1, max_value=12),
                              n: Option(int, "Number of players on the leaderboard (max 25)", default=10, min_value=1,
                                        max_value=25)):
-    await generate_scoreboard(ctx, "monthly", category, kingdom=kingdom, year=year, month=month, n=n)
+    await generate_scoreboard(ctx, "monthly", category, kingdom=kingdom, scope=scope, year=year, month=month, n=n)
 
 
 @bot.slash_command(name="day_scoreboard", description="Get the daily scoreboard for a specific category")
 @guild_only()
 async def day_scoreboard(ctx, category: Option(str, "The leaderboard category", choices=categories),
                          kingdom: Option(str, "Name of the kingdom", default=None, max_length=40),
+                         scope: Option(str, "The scope of the leaderboard", choices=["This Server", "All Servers"],
+                                       default="This Server"),
                          year: Option(int, "Enter the year", default=None, min_value=1, max_value=999999),
                          month: Option(int, "Enter the month number", default=None, min_value=1, max_value=12),
                          day: Option(int, "Enter the day number", default=None, min_value=1, max_value=31),
                          n: Option(int, "Number of players on the leaderboard (max 25)", default=10, min_value=1,
                                    max_value=25)):
-    await generate_scoreboard(ctx, "daily", category, kingdom=kingdom, year=year, month=month, day=day, n=n)
+    await generate_scoreboard(ctx, "daily", category, kingdom=kingdom, scope=scope, year=year, month=month, day=day,
+                              n=n)
 
 
 @bot.slash_command(name="week_scoreboard", description="Get the weekly scoreboard for a specific category")
 @guild_only()
 async def weekly_scoreboard(ctx, category: Option(str, "The leaderboard category", choices=categories),
                             kingdom: Option(str, "Name of the kingdom", default=None, max_length=40),
+                            scope: Option(str, "The scope of the leaderboard", choices=["This Server", "All Servers"],
+                                          default="This Server"),
                             year: Option(int, "Enter the year", default=None, min_value=1, max_value=999999),
                             week: Option(int, "Enter the week number", default=None, min_value=1, max_value=53),
                             n: Option(int, "Number of players on the leaderboard (max 25)", default=10, min_value=1,
                                       max_value=25)):
-    await generate_scoreboard(ctx, "weekly", category, kingdom=kingdom, year=year, week=week, n=n)
+    await generate_scoreboard(ctx, "weekly", category, kingdom=kingdom, scope=scope, year=year, week=week, n=n)
 
 
 @bot.slash_command(name="set_language", description="Set your language preference")
@@ -307,6 +332,8 @@ async def help_command(ctx):
                     value=language_file.get("help_correctlatest"), inline=False)
     embed.add_field(name="/alter_record",
                     value=language_file.get("help_alterrecord"), inline=False)
+    embed.add_field(name="/get_record",
+                    value=language_file.get("help_getrecord"), inline=False)
     embed.add_field(name="/scoreboard",
                     value=language_file.get("help_scoreboard"), inline=False)
     embed.add_field(name="/year_scoreboard",
@@ -320,8 +347,31 @@ async def help_command(ctx):
     await ctx.respond(embed=embed)
 
 
+@bot.slash_command(name="get_record", description="Shows the latest record of a specific player")
+@guild_only()
+async def get_record(ctx,
+                     playername: Option(str, "Enter the player's name", max_length=40)):
+    await ctx.defer()
+    # fetch user preferred language and obtain localized column names
+    language = await get_language(ctx.author.id)
+    language_file = translation_cache[language]
+
+    latest_record = await get_latest_record(ctx.guild.id, playername)
+    column_names = get_column_names()
+    localized_column_names = [language_file.get(column, column) for column in column_names]
+    if latest_record:
+        message = f"{language_file.get('showingrecord')} {playername}\n```"
+        for localized_attribute, value in zip(localized_column_names, latest_record):
+            message += f"\n{localized_attribute}: {value}"
+        message += "```"
+    else:
+        message = f"{language_file.get('norecordfound')}"
+    await ctx.followup.send(message)
+
+
 # Helper functions
-async def generate_scoreboard(ctx, scoreboard_type, category, kingdom=None, year=None, month=None, day=None, week=None,
+async def generate_scoreboard(ctx, scoreboard_type, category, scope, kingdom=None, year=None, month=None, day=None,
+                              week=None,
                               n=10):
     """
         Asynchronously generates and sends a scoreboard embed to a Discord context based on the given parameters.
@@ -363,7 +413,7 @@ async def generate_scoreboard(ctx, scoreboard_type, category, kingdom=None, year
     asc = category in asc_categories
 
     # Calculate the progress and sort the records
-    changes = await calculate_changes(ctx.guild.id, category, year, month, day, week, kingdom)
+    changes = await calculate_changes(ctx.guild.id, category, scope == "All Servers", year, month, day, week, kingdom)
     sorted_changes = sorted(changes, key=lambda x: x['differences'].get(category, 0), reverse=not asc)[:n]
 
     # determine start and end dates for the embed title, then add the embed fields
