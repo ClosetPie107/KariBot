@@ -240,7 +240,7 @@ async def scoreboard(ctx,
     asc = category in asc_categories
 
     # fetch scoreboard
-    scoreboard = await get_scoreboard(ctx.guild.id, category, scope == "All Servers", asc, n)
+    scoreboard = await get_scoreboard(ctx.guild.id, category, scope == "All Servers", asc, n,kingdom)
     title = f"{language_file.get('scoreboardfor')} {language_file.get(category)}"
     if kingdom:
         title = f"({kingdom}) {title}"
