@@ -18,6 +18,7 @@ from discord.ext.commands import has_permissions
 from discord import guild_only, Option
 from ocr_related import process_images_tess
 from fuzzywuzzy import process
+from confirm_delete import ConfirmDeleteView
 
 intents = discord.Intents.default()
 bot = discord.Bot(intents=intents)
@@ -161,7 +162,7 @@ async def correct_latest(ctx,
 
 @bot.slash_command(name="alter_record", description="Alter a specific player's record")
 @guild_only()
-@has_permissions(administrator=True)  # This ensures only admins can use this command
+@has_permissions(administrator=True)
 async def alter_record(ctx,
                        playername: Option(str, "Enter the player's name", max_length=40),
                        date: Option(str, "Enter the date of the record in yyyy-mm-dd format"),
@@ -220,6 +221,87 @@ async def alter_record(ctx,
         await ctx.followup.send(f'{language_file.get("norecordfound")}')
 
 
+@bot.slash_command(name="delete_record", description="Delete a specific player's record")
+@guild_only()
+@has_permissions(administrator=True)
+async def delete_record(ctx,
+                        playername: Option(str, "Enter the player's name", max_length=40),
+                        date: Option(str, "Enter the date of the record in yyyy-mm-dd format"),
+                        record_option: Option(str, "Choose first (oldest) or second (latest) record on this date",
+                                              choices=["first", "second"])):
+    await ctx.defer()
+
+    # fetch user preferred language
+    language = await get_language(ctx.author.id)
+    language_file = translation_cache[language]
+
+    # validate the record date
+    try:
+        date_obj = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        await ctx.followup.send(language_file.get("invaliddate"))
+        return
+
+    # extract year, month, and day from the date object
+    year, month, day = date_obj.year, date_obj.month, date_obj.day
+
+    # try to fetch the record
+    fetch_record = await fetch_specific_record(ctx.guild.id, playername, year, month, day, record_option)
+    if fetch_record:
+        record, record_id = fetch_record
+    else:
+        await ctx.followup.send(language_file.get("norecordfound"))
+        return
+
+    column_names = get_column_names()
+    localized_column_names = [language_file.get(column, column) for column in column_names]
+
+    view = ConfirmDeleteView(confirm_label=language_file.get("confirmdelete"), cancel_label=language_file.get("cancel"))
+    message = f"{language_file.get('deletingrecord')} {playername}?\n```"
+    for localized_attribute, value in zip(localized_column_names, record):
+        message += f"\n{localized_attribute}: {value}"
+    message += "```"
+    await ctx.followup.send(message, view=view)
+    await view.wait()  # wait for the user to click a button or for the view to timeout
+
+    if view.value is None:
+        await ctx.followup.send(language_file.get("timedout"))
+    elif view.value:
+        # deletion
+        await delete_specific_record(record_id)
+        await ctx.followup.send(language_file.get("recorddeleted"))
+    else:
+        # cancel
+        await ctx.followup.send(language_file.get("deletecancelled"))
+
+
+@bot.slash_command(name="purge_records", description="Deletes all records of a player in this server")
+@guild_only()
+@has_permissions(administrator=True)
+async def purge_records(ctx,
+                        playername: Option(str, "Enter the player's name", max_length=40)):
+    await ctx.defer()
+
+    # fetch user preferred language
+    language = await get_language(ctx.author.id)
+    language_file = translation_cache[language]
+
+    view = ConfirmDeleteView(confirm_label=language_file.get("confirmdelete"), cancel_label=language_file.get("cancel"))
+    message = f"{language_file.get('purgerecords')} {playername}?"
+    await ctx.followup.send(message, view=view)
+    await view.wait()  # wait for the user to click a button or for the view to timeout
+
+    if view.value is None:
+        await ctx.followup.send(language_file.get("timedout"))
+    elif view.value:
+        # deletion
+        affected_rows = await purge_player_records(ctx.guild.id, playername)
+        await ctx.followup.send(f"{language_file.get('recordspurged')} ({affected_rows}).")
+    else:
+        # cancel
+        await ctx.followup.send(language_file.get("deletecancelled"))
+
+
 @bot.slash_command(name="scoreboard", description="Get the scoreboard for a specific category")
 @guild_only()
 async def scoreboard(ctx,
@@ -240,7 +322,7 @@ async def scoreboard(ctx,
     asc = category in asc_categories
 
     # fetch scoreboard
-    scoreboard = await get_scoreboard(ctx.guild.id, category, scope == "All Servers", asc, n,kingdom)
+    scoreboard = await get_scoreboard(ctx.guild.id, category, scope == "All Servers", asc, n, kingdom)
     title = f"{language_file.get('scoreboardfor')} {language_file.get(category)}"
     if kingdom:
         title = f"({kingdom}) {title}"
@@ -334,6 +416,10 @@ async def help_command(ctx):
                     value=language_file.get("help_alterrecord"), inline=False)
     embed.add_field(name="/get_record",
                     value=language_file.get("help_getrecord"), inline=False)
+    embed.add_field(name="/delete_record",
+                    value=language_file.get("help_deleterecord"), inline=False)
+    embed.add_field(name="/purge_records",
+                    value=language_file.get("help_purgerecords"), inline=False)
     embed.add_field(name="/scoreboard",
                     value=language_file.get("help_scoreboard"), inline=False)
     embed.add_field(name="/year_scoreboard",

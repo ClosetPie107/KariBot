@@ -7,6 +7,7 @@ The above copyright notice and this permission notice shall be included in all c
 """
 
 from datetime import datetime, timedelta
+
 from lang_db_connection import LangDBConnection
 from stat_db_connection import StatDBConnection
 
@@ -280,6 +281,73 @@ async def update_specific_record(guild_id, playername, year, month, day, which, 
         await cur.execute(query_update_record, (new_value, record_id))
         await conn.commit()
     return record
+
+
+async def delete_specific_record(record_id):
+    """
+    deletes a specific record for a player
+
+    :param record_id: the id of the record to delete
+    """
+    db = await StatDBConnection.get_instance()
+    conn = await db.get_connection()
+    cur = await conn.cursor()
+    query_delete_record = f"DELETE FROM playerstats WHERE id = ?"
+    await cur.execute(query_delete_record, (record_id,))
+    await conn.commit()
+
+
+async def fetch_specific_record(guild_id, playername, year, month, day, which):
+    """
+    fetch a specific record for a player
+
+    :param guild_id: The guild ID associated with the record.
+    :param playername: The name of the player.
+    :param year: The year of the record to update.
+    :param month: The month of the record to update.
+    :param day: The day of the record to update.
+    :param which: Indicates whether to update the 'first' or 'last' record for the given time frame.
+    :return: The record and its id if found
+    """
+    db = await StatDBConnection.get_instance()
+    conn = await db.get_connection()
+
+    time_frame_filter = construct_time_frame_filter(1, year=year, month=month, day=day)
+    order_by = "ASC" if which == "first" else "DESC"
+
+    # query to find the specific record
+    query_find_record = f"""
+           SELECT * FROM playerstats p1
+           WHERE guildid = ? AND playername = ? AND {time_frame_filter}
+           ORDER BY timestamp {order_by}
+           LIMIT 1
+       """
+    cur = await conn.cursor()
+    await cur.execute(query_find_record, (guild_id, playername))
+    record = await cur.fetchone()
+    if record:
+        return record[5:], record[0]
+    else:
+        return None
+
+
+async def purge_player_records(guild_id, playername):
+    """
+    deletes all records of a player
+
+    :param guild_id: the id of the discord server
+    :param playername: the name of the player
+    :return deleted_count: the number of deleted rows
+
+    """
+    db = await StatDBConnection.get_instance()
+    conn = await db.get_connection()
+    cur = await conn.cursor()
+    query_delete_records = f"DELETE FROM playerstats WHERE guildid = ? AND playername=?"
+    await cur.execute(query_delete_records, (guild_id, playername))
+    await conn.commit()
+    deleted_count = cur.rowcount
+    return deleted_count
 
 
 async def update_merged_record(cur, merged_data, record_id):

@@ -37,7 +37,7 @@ async def process_images_tess(image_url, playername, guild_id, discord_id, langu
     playerstats = {}
     async with aiohttp.ClientSession() as session:
         playerstats, visited = await fetch_and_process_image(session, image_url, ocr_processing, language_file)
-        playerstats = sanitize_ocr_results(playerstats)  # Assuming sanitize_ocr_results is defined elsewhere
+        playerstats = sanitize_ocr_results(playerstats)
 
         if second_image_url:
             playerstats2, visited2 = await fetch_and_process_image(session, second_image_url, ocr_processing,
