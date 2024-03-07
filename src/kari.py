@@ -256,7 +256,8 @@ async def delete_record(ctx,
     column_names = get_column_names()
     localized_column_names = [language_file.get(column, column) for column in column_names]
 
-    view = ConfirmDeleteView(confirm_label=language_file.get("confirmdelete"), cancel_label=language_file.get("cancel"))
+    view = ConfirmDeleteView(confirm_label=language_file.get("confirmdelete"), cancel_label=language_file.get("cancel"),
+                             not_allowed_msg=language_file.get("notallowed"), initiator_id=ctx.author.id)
     message = f"{language_file.get('deletingrecord')} {playername}?\n```"
     for localized_attribute, value in zip(localized_column_names, record):
         message += f"\n{localized_attribute}: {value}"
@@ -286,7 +287,8 @@ async def purge_records(ctx,
     language = await get_language(ctx.author.id)
     language_file = translation_cache[language]
 
-    view = ConfirmDeleteView(confirm_label=language_file.get("confirmdelete"), cancel_label=language_file.get("cancel"))
+    view = ConfirmDeleteView(confirm_label=language_file.get("confirmdelete"), cancel_label=language_file.get("cancel"),
+                             not_allowed_msg=language_file.get("notallowed"),initiator_id=ctx.author.id)
     message = f"{language_file.get('purgerecords')} {playername}?"
     await ctx.followup.send(message, view=view)
     await view.wait()  # wait for the user to click a button or for the view to timeout
@@ -296,7 +298,7 @@ async def purge_records(ctx,
     elif view.value:
         # deletion
         affected_rows = await purge_player_records(ctx.guild.id, playername)
-        await ctx.followup.send(f"{language_file.get('recordspurged')} ({affected_rows}).")
+        await ctx.followup.send(f"{language_file.get('recordspurged')} {affected_rows}.")
     else:
         # cancel
         await ctx.followup.send(language_file.get("deletecancelled"))
